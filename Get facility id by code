@@ -1,0 +1,58 @@
+SET @search_code = 'eumeworld';   -- change to your facility code
+
+-- 1. Search in facility_alias (most likely)
+SELECT 
+    'facility_alias.code' AS source,
+    fa.code AS match_value,
+    fa.facility_id,
+    f.display_name
+FROM uniware.facility_alias fa
+JOIN uniware.facility f ON f.id = fa.facility_id
+WHERE fa.code = @search_code
+
+UNION ALL
+
+-- 2. Search in facility_alias.alias_name
+SELECT 
+    'facility_alias.alias_name' AS source,
+    fa.alias_name AS match_value,
+    fa.facility_id,
+    f.display_name
+FROM uniware.facility_alias fa
+JOIN uniware.facility f ON f.id = fa.facility_id
+WHERE fa.alias_name = @search_code
+
+UNION ALL
+
+-- 3. Search in facility.display_name
+SELECT 
+    'facility.display_name' AS source,
+    f.display_name AS match_value,
+    f.id AS facility_id,
+    f.display_name
+FROM uniware.facility f
+WHERE f.display_name = @search_code
+
+UNION ALL
+
+-- 4. Search in facility_alias where code matches partially (if wildcard needed)
+SELECT 
+    'facility_alias.code (LIKE)' AS source,
+    fa.code AS match_value,
+    fa.facility_id,
+    f.display_name
+FROM uniware.facility_alias fa
+JOIN uniware.facility f ON f.id = fa.facility_id
+WHERE fa.code LIKE CONCAT('%', @search_code, '%')
+
+UNION ALL
+
+-- 5. Search in facility_alias.alias_name (partial)
+SELECT 
+    'facility_alias.alias_name (LIKE)' AS source,
+    fa.alias_name AS match_value,
+    fa.facility_id,
+    f.display_name
+FROM uniware.facility_alias fa
+JOIN uniware.facility f ON f.id = fa.facility_id
+WHERE fa.alias_name LIKE CONCAT('%', @search_code, '%');
