@@ -1,0 +1,16 @@
+-- ============================================================
+-- Channel Notification Mapping by entity_code(s)
+-- ============================================================
+SET @schema_name = 'uniware';               -- Change to your schema (e.g., 'Cloud29', 'Cloud36')
+SET @entity_codes = ('WH177034', 'WH177035');   -- Put all your entity codes here
+
+SET @dynamic_sql = CONCAT('
+    SELECT *
+    FROM ', @schema_name, '.channel_notification_mapping cnm
+    JOIN ', @schema_name, '.notification n ON n.id = cnm.notification_id
+    WHERE n.entity_code IN (', @entity_codes, ')
+');
+
+PREPARE stmt FROM @dynamic_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
