@@ -1,0 +1,276 @@
+-- ========================================================================
+-- PARAMETERS – SET ONCE (change these as needed)
+-- ========================================================================
+SET @schema_name = 'Cloud29';           -- or 'Cloud36', 'beardo', etc.
+SET @facility_id = 11057;              -- facility ID (not name)
+SET @sku_code    = 'BCT39373';
+SET @start_date  = '2026-05-21 00:00:00';
+SET @end_date    = '2026-05-29 23:59:59';
+
+-- ------------------------------------------------------------------------
+-- Build dynamic SQL – do not modify below unless you understand
+-- ------------------------------------------------------------------------
+SET @sql_detailed = NULL;
+SET @sql_unfulfilled = NULL;
+
+-- 1. Detailed transaction timeline (same as original but schema‑dynamic)
+SET @sql_detailed = CONCAT('
+SELECT * FROM (
+    -- GATEPASS via Inventory Ledger
+    SELECT
+        ''GATEPASS'' AS event_type,
+        ledger.transaction_identifier AS reference_code,
+        ledger.transaction_type,
+        ledger.sku_code,
+        ledger.old_balance,
+        ledger.quantity,
+        ledger.new_balance,
+        ledger.additional_info AS remarks,
+        NULL AS vendor_invoice,
+        NULL AS rejected_qty,
+        ledger.created AS event_time,
+        fac.display_name AS facility_name
+    FROM ', @schema_name, '.inventory_ledger ledger
+    JOIN ', @schema_name, '.facility fac ON fac.id = ledger.facility_id
+    WHERE ledger.sku_code = ''', @sku_code, '''
+      AND ledger.facility_id = ', @facility_id, '
+      AND ledger.transaction_type LIKE ''%GATEPASS%''
+      AND ledger.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- GATEPASS via Inventory Adjustment
+    SELECT
+        ''GATEPASS (ADJ)'',
+        adj.remarks,
+        adj.adjustment_type,
+        adj.sku_code,
+        adj.old_quantity,
+        adj.quantity,
+        NULL,
+        CONCAT(''by='', adj.username),
+        NULL,
+        NULL,
+        adj.created,
+        fac.display_name
+    FROM ', @schema_name, '.inventory_adjustment adj
+    JOIN ', @schema_name, '.facility fac ON fac.id = adj.facility_id
+    WHERE adj.sku_code = ''', @sku_code, '''
+      AND adj.facility_id = ', @facility_id, '
+      AND (adj.adjustment_type LIKE ''%GATEPASS%'' OR adj.remarks LIKE ''%GP%'' OR adj.remarks LIKE ''%GATEPASS%'')
+      AND adj.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- GRN / PURCHASE
+    SELECT
+        ''GRN / PURCHASE'',
+        grn.code,
+        grn.status_code,
+        itype.sku_code,
+        NULL,
+        grn_item.quantity,
+        NULL,
+        CONCAT(''invoice='', grn.vendor_invoice_number, '' | date='', grn.vendor_invoice_date),
+        grn.vendor_invoice_number,
+        grn_item.rejected_quantity,
+        grn.created,
+        fac.display_name
+    FROM ', @schema_name, '.inflow_receipt grn
+    JOIN ', @schema_name, '.inflow_receipt_item grn_item ON grn_item.inflow_receipt_id = grn.id
+    JOIN ', @schema_name, '.item_type itype ON itype.id = grn_item.item_type_id
+    JOIN ', @schema_name, '.facility fac ON fac.id = grn.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND grn.facility_id = ', @facility_id, '
+      AND grn.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- SALE ORDERS
+    SELECT
+        ''SALE ORDER'',
+        so.code,
+        so.status_code,
+        soi.sku_code,
+        NULL,
+        soi.quantity,
+        NULL,
+        CONCAT(''Item status: '', soi.status_code, '' | Channel: '', so.channel_id),
+        NULL,
+        NULL,
+        soi.created,
+        fac.display_name
+    FROM ', @schema_name, '.sale_order_item soi
+    JOIN ', @schema_name, '.sale_order so ON soi.sale_order_id = so.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = soi.facility_id
+    WHERE soi.sku_code = ''', @sku_code, '''
+      AND soi.facility_id = ', @facility_id, '
+      AND soi.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- PURCHASE ORDERS
+    SELECT
+        ''PURCHASE ORDER'',
+        po.code,
+        po.status_code,
+        itype.sku_code,
+        NULL,
+        poi.quantity,
+        NULL,
+        CONCAT(''Received: '', poi.received_quantity, '' | Vendor: '', po.vendor_id),
+        NULL,
+        NULL,
+        poi.created,
+        fac.display_name
+    FROM ', @schema_name, '.purchase_order_item poi
+    JOIN ', @schema_name, '.purchase_order po ON poi.purchase_order_id = po.id
+    JOIN ', @schema_name, '.item_type itype ON poi.item_type_id = itype.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = po.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND po.facility_id = ', @facility_id, '
+      AND poi.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- PUTAWAY
+    SELECT
+        ''PUTAWAY'',
+        p.code,
+        pui.status_code,
+        itype.sku_code,
+        NULL,
+        pui.quantity,
+        NULL,
+        CONCAT(''Shelf: '', pui.shelf_id, '' | Type: '', pui.type),
+        NULL,
+        NULL,
+        pui.created,
+        fac.display_name
+    FROM ', @schema_name, '.putaway_item pui
+    JOIN ', @schema_name, '.putaway p ON pui.putaway_id = p.id
+    JOIN ', @schema_name, '.item_type itype ON pui.item_type_id = itype.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = p.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND p.facility_id = ', @facility_id, '
+      AND pui.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- CYCLE COUNT SETTLEMENT
+    SELECT
+        ''CYCLE COUNT SETTLEMENT'',
+        CONCAT(''CC-'', ccs.source_cycle_count_task_id),
+        ccs.type,
+        itype.sku_code,
+        NULL,
+        ccs.quantity,
+        NULL,
+        CONCAT(''Settled: '', ccs.settled, '' | Settled qty: '', ccs.settled_quantity),
+        NULL,
+        NULL,
+        ccs.created,
+        fac.display_name
+    FROM ', @schema_name, '.cycle_count_settlement ccs
+    JOIN ', @schema_name, '.item_type itype ON ccs.item_type_id = itype.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = ccs.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND ccs.facility_id = ', @facility_id, '
+      AND ccs.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- INVENTORY SETTLEMENT
+    SELECT
+        ''INVENTORY SETTLEMENT'',
+        CONCAT(invs.entity_name, ''-'', invs.identifier),
+        invs.work_flow,
+        itype.sku_code,
+        NULL,
+        invs.quantity,
+        NULL,
+        CONCAT(''Blocked: '', invs.quantity_blocked, '' | Settled: '', invs.settled),
+        NULL,
+        NULL,
+        invs.created,
+        fac.display_name
+    FROM ', @schema_name, '.inventory_settlement invs
+    JOIN ', @schema_name, '.item_type itype ON invs.item_type_id = itype.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = invs.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND invs.facility_id = ', @facility_id, '
+      AND invs.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+    UNION ALL
+
+    -- OUTBOUND GATE PASS
+    SELECT
+        ''OUTBOUND GATE PASS'',
+        ogp.code,
+        ogp.status_code,
+        itype.sku_code,
+        NULL,
+        ogpi.quantity,
+        NULL,
+        CONCAT(''To party: '', ogp.to_party_id, '' | Type: '', ogp.type),
+        NULL,
+        NULL,
+        ogp.created,
+        fac.display_name
+    FROM ', @schema_name, '.outbound_gate_pass ogp
+    JOIN ', @schema_name, '.outbound_gate_pass_item ogpi ON ogp.id = ogpi.outbound_gate_pass_id
+    JOIN ', @schema_name, '.item_type itype ON ogpi.item_type_id = itype.id
+    JOIN ', @schema_name, '.facility fac ON fac.id = ogp.facility_id
+    WHERE itype.sku_code = ''', @sku_code, '''
+      AND ogp.facility_id = ', @facility_id, '
+      AND ogp.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+
+) AS combined_result
+ORDER BY event_time ASC;
+');
+
+-- 2. Unfulfillable analysis – shows orders that were NOT fully fulfilled
+SET @sql_unfulfilled = CONCAT('
+SELECT 
+    so.id AS sale_order_id,
+    so.code AS order_code,
+    soi.id AS order_item_id,
+    soi.sku_code,
+    soi.quantity AS ordered_qty,
+    soi.status_code AS item_status,
+    so.status_code AS order_status,
+    soi.cancellation_reason,
+    soi.cancelled_by_seller,
+    soi.created AS order_date,
+    -- Check if inventory allocation existed
+    (SELECT COUNT(*) FROM ', @schema_name, '.item_type_inventory_allocation itia 
+     WHERE itia.sale_order_item_id = soi.id) AS allocation_entries,
+    -- Check if any picklist item was created
+    (SELECT COUNT(*) FROM ', @schema_name, '.picklist_item pli 
+     WHERE pli.sale_order_item_code = soi.code) AS picklist_items,
+    -- If allocation exists but no picklist, likely inventory shortage
+    CASE 
+        WHEN soi.status_code IN (''CANCELLED'', ''FAILED'', ''ON_HOLD'') THEN ''Order item not fulfilled''
+        WHEN soi.quantity > (SELECT IFNULL(SUM(ita.quantity),0) FROM ', @schema_name, '.item_type_inventory_allocation ita WHERE ita.sale_order_item_id = soi.id)
+             THEN ''Partially allocated – insufficient inventory''
+        WHEN soi.status_code = ''PENDING'' AND (SELECT COUNT(*) FROM ', @schema_name, '.picklist_item pli WHERE pli.sale_order_item_code = soi.code) = 0
+             THEN ''Never picked – allocation or workflow issue''
+        ELSE ''Fulfilled or in progress''
+    END AS unfulfillable_reason
+FROM ', @schema_name, '.sale_order_item soi
+JOIN ', @schema_name, '.sale_order so ON so.id = soi.sale_order_id
+WHERE soi.sku_code = ''', @sku_code, '''
+  AND soi.facility_id = ', @facility_id, '
+  AND soi.created BETWEEN ''', @start_date, ''' AND ''', @end_date, '''
+  AND (soi.status_code != ''DELIVERED'' OR soi.quantity > (SELECT IFNULL(SUM(ita.quantity),0) FROM ', @schema_name, '.item_type_inventory_allocation ita WHERE ita.sale_order_item_id = soi.id))
+ORDER BY soi.created DESC;
+');
+
+-- Execute the dynamic queries
+PREPARE stmt FROM @sql_detailed;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+PREPARE stmt2 FROM @sql_unfulfilled;
+EXECUTE stmt2;
+DEALLOCATE PREPARE stmt2;
