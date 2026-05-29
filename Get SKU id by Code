@@ -1,0 +1,8 @@
+QUERY 1
+
+SELECT id FROM Cloud29.item_type WHERE sku_code = 'BTPD9331';
+
+
+
+QUERY 2
+
