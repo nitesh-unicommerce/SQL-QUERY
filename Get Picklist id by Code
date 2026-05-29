@@ -1,1 +1,392 @@
+QUERY 1
+
+
+-- =====================================================
+-- Global parameters (change these as needed)
+-- =====================================================
+SET @picklist_code = 'PK6413';
+SET @facility_id = 253237;
+
+-- First, get the picklist_id from the code and facility
+SET @picklist_id = (SELECT id FROM uniware.picklist 
+                    WHERE code = @picklist_code AND facility_id = @facility_id);
+
+-- =====================================================
+-- 1. Picklist Item details (same as your first query)
+-- =====================================================
+SELECT * 
+FROM uniware.picklist_item 
+WHERE picklist_id = @picklist_id
+LIMIT 1000;
+
+-- =====================================================
+-- 2. Pick Batch details (linked via picklist_id)
+-- =====================================================
+SELECT * 
+FROM uniware.pick_batch 
+WHERE picklist_id = @picklist_id;
+
+-- =====================================================
+-- 3. Pick Bucket details (linked via pick_batch.pick_bucket_id)
+-- =====================================================
+SELECT b.id, b.code, b.status_code, b.facility_id
+FROM uniware.pick_bucket b
+WHERE b.id IN (
+    SELECT DISTINCT pick_bucket_id 
+    FROM uniware.pick_batch 
+    WHERE picklist_id = @picklist_id
+);
+
+QUERY 2
+
+-- ============================================================================
+-- Comprehensive Picklist Details for a specific Shipment
+-- Parameters:
+--   @picklist_code = 'PK6413'
+--   @facility_id    = 253237
+--   @shipment_code  = 'PHSP21762'
+-- ============================================================================
+
+SET @picklist_code = 'PK6413';
+SET @facility_id   = 253237;
+SET @shipment_code = 'PHSP21762';
+
+-- Resolve picklist_id once
+SET @picklist_id = (SELECT id FROM uniware.picklist 
+                    WHERE code = @picklist_code AND facility_id = @facility_id);
+
+-- ----------------------------------------------------------------------------
+-- 1. Picklist Header (with picklist_id)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pl.id AS picklist_id,
+    pl.code AS picklist_code,
+    pl.facility_id,
+    pl.status_code,
+    pl.type,
+    pl.destination,
+    pl.user_id AS created_by_user_id,
+    u.username AS created_by_username,
+    pl.picker,
+    pl.pick_set_id,
+    pl.pick_set_name,
+    pl.packing_station_id,
+    ps.code AS packing_station_code,
+    pl.created,
+    pl.start_picking,
+    pl.complete_picking,
+    pl.updated
+FROM uniware.picklist pl
+LEFT JOIN uniware.user u ON u.id = pl.user_id
+LEFT JOIN uniware.packing_station ps ON ps.id = pl.packing_station_id
+WHERE pl.id = @picklist_id;
+
+-- ----------------------------------------------------------------------------
+-- 2. Picklist Items (only those linked to the given shipment code)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pli.id AS picklist_item_id,
+    pli.picklist_id,
+    pli.sku_code,
+    pli.item_code,
+    pli.sale_order_item_code,
+    pli.sale_order_code,
+    pli.shipping_package_code,
+    pli.shelf_code,
+    pli.staging_shelf_code,
+    pli.status_code,
+    pli.qc_status_code,
+    pli.scanned,
+    pli.scanned_time,
+    pli.batch_code,
+    pli.combination_identifier,
+    pli.created,
+    pli.updated
+FROM uniware.picklist_item pli
+WHERE pli.picklist_id = @picklist_id
+  AND pli.shipping_package_code = @shipment_code
+ORDER BY pli.created;
+
+-- ----------------------------------------------------------------------------
+-- 3. Picklist Item Details (quantities for those items)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pld.id,
+    pld.picklist_id,
+    pld.item_type_id,
+    it.sku_code,
+    it.name AS item_name,
+    pld.total_qty,
+    pld.scanned_qty,
+    pld.cancelled_qty,
+    pld.not_found_qty,
+    pld.picked_qty,
+    pld.not_picked_qty,
+    pld.pick_scanned_qty,
+    pld.putback_pending_qty,
+    pld.putback_accepted_qty,
+    pld.batch_id,
+    b.code AS batch_code,
+    pld.shelf_id,
+    s.code AS shelf_code
+FROM uniware.picklist_item_detail pld
+JOIN uniware.item_type it ON it.id = pld.item_type_id
+LEFT JOIN uniware.batch b ON b.id = pld.batch_id
+LEFT JOIN uniware.shelf s ON s.id = pld.shelf_id
+WHERE pld.picklist_id = @picklist_id
+  AND EXISTS (
+      SELECT 1 FROM uniware.picklist_item pli2
+      WHERE pli2.picklist_id = @picklist_id
+        AND pli2.shipping_package_code = @shipment_code
+        AND pli2.id = pld.id  -- assuming pld.id corresponds to picklist_item.id? Adjust if needed.
+  );
+
+-- ----------------------------------------------------------------------------
+-- 4. Pick Batches for this picklist (still applies to whole picklist)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pb.id AS pick_batch_id,
+    pb.picklist_id,
+    pb.status_code,
+    pb.pick_bucket_id,
+    pb.created,
+    pb.submitted_date,
+    pb.updated
+FROM uniware.pick_batch pb
+WHERE pb.picklist_id = @picklist_id;
+
+-- ----------------------------------------------------------------------------
+-- 5. Pick Buckets (Totes) used for this picklist
+-- ----------------------------------------------------------------------------
+SELECT 
+    pbu.id AS pick_bucket_id,
+    pbu.code AS tote_code,
+    pbu.status_code,
+    pbu.facility_id,
+    pbu.length,
+    pbu.width,
+    pbu.height,
+    pbu.created,
+    pbu.updated
+FROM uniware.pick_bucket pbu
+WHERE pbu.id IN (
+    SELECT DISTINCT pick_bucket_id 
+    FROM uniware.pick_batch 
+    WHERE picklist_id = @picklist_id
+);
+
+-- ----------------------------------------------------------------------------
+-- 6. Tote Assignments (slot -> shipping package) – filtered by shipment
+-- ----------------------------------------------------------------------------
+SELECT 
+    pbs.id AS bucket_slot_id,
+    pbs.picklist_id,
+    pbs.slot_number,
+    pbs.shipping_package_id,
+    sp.code AS shipping_package_code,
+    pbsi.id AS slot_item_id,
+    pbsi.sale_order_item_id,
+    pbsi.status_code AS slot_item_status,
+    pbsi.created AS slot_assigned_time
+FROM uniware.pick_bucket_slot pbs
+LEFT JOIN uniware.shipping_package sp ON sp.id = pbs.shipping_package_id
+LEFT JOIN uniware.pick_bucket_slot_item pbsi ON pbsi.pick_bucket_slot_id = pbs.id
+WHERE pbs.picklist_id = @picklist_id
+  AND sp.code = @shipment_code;
+
+-- ----------------------------------------------------------------------------
+-- 7. Summary (only for the given shipment)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pl.id AS picklist_id,
+    pl.code,
+    COUNT(DISTINCT pli.id) AS total_picklist_items_for_shipment,
+    SUM(CASE WHEN pli.scanned = 1 THEN 1 ELSE 0 END) AS scanned_items,
+    ROUND(100.0 * SUM(CASE WHEN pli.scanned = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(pli.id), 0), 2) AS scan_percentage,
+    SUM(pld.total_qty) AS total_quantity_to_pick,
+    SUM(pld.scanned_qty) AS total_scanned_quantity,
+    SUM(pld.picked_qty) AS total_picked_quantity,
+    SUM(pld.not_found_qty) AS total_not_found,
+    SUM(pld.cancelled_qty) AS total_cancelled,
+    pl.status_code AS picklist_status,
+    pl.created AS picklist_created,
+    pl.complete_picking AS picklist_completed
+FROM uniware.picklist pl
+LEFT JOIN uniware.picklist_item pli ON pli.picklist_id = pl.id AND pli.shipping_package_code = @shipment_code
+LEFT JOIN uniware.picklist_item_detail pld ON pld.picklist_id = pl.id
+   AND EXISTS (SELECT 1 FROM uniware.picklist_item pli2 WHERE pli2.picklist_id = pl.id AND pli2.shipping_package_code = @shipment_code AND pli2.id = pld.id)
+WHERE pl.id = @picklist_id
+GROUP BY pl.id;
+
+QUERY 3
+
+
+-- ============================================================================
+-- Comprehensive Picklist Details (all related data)
+-- Parameters: @picklist_code = 'PK6413', @facility_id = 253237
+-- Returns multiple result sets (union not possible due to different columns)
+-- ============================================================================
+
+SET @picklist_code = 'PK6413';
+SET @facility_id = 253237;
+
+-- ----------------------------------------------------------------------------
+-- 1. Picklist Header (including computed picklist_id)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pl.id AS picklist_id,
+    pl.code AS picklist_code,
+    pl.facility_id,
+    pl.status_code,
+    pl.type,
+    pl.destination,
+    pl.user_id AS created_by_user_id,
+    u.username AS created_by_username,
+    pl.picker,
+    pl.pick_set_id,
+    pl.pick_set_name,
+    pl.packing_station_id,
+    ps.code AS packing_station_code,
+    pl.created,
+    pl.start_picking,
+    pl.complete_picking,
+    pl.updated
+FROM uniware.picklist pl
+LEFT JOIN uniware.user u ON u.id = pl.user_id
+LEFT JOIN uniware.packing_station ps ON ps.id = pl.packing_station_id
+WHERE pl.code = @picklist_code AND pl.facility_id = @facility_id;
+
+-- ----------------------------------------------------------------------------
+-- 2. Picklist Items (all items with SKU, shelf, batch, timestamps)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pli.id AS picklist_item_id,
+    pli.picklist_id,
+    pli.sku_code,
+    pli.item_code,
+    pli.sale_order_item_code,
+    pli.sale_order_code,
+    pli.shipping_package_code,
+    pli.shelf_code,
+    pli.staging_shelf_code,
+    pli.status_code,
+    pli.qc_status_code,
+    pli.scanned,
+    pli.scanned_time,
+    pli.batch_code,
+    pli.combination_identifier,
+    pli.created,
+    pli.updated
+FROM uniware.picklist_item pli
+WHERE pli.picklist_id = (SELECT id FROM uniware.picklist WHERE code = @picklist_code AND facility_id = @facility_id)
+ORDER BY pli.created;
+
+-- ----------------------------------------------------------------------------
+-- 3. Picklist Item Details (quantities per SKU/shelf/batch)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pld.id,
+    pld.picklist_id,
+    pld.item_type_id,
+    it.sku_code,
+    it.name AS item_name,
+    pld.total_qty,
+    pld.scanned_qty,
+    pld.cancelled_qty,
+    pld.not_found_qty,
+    pld.picked_qty,
+    pld.not_picked_qty,
+    pld.pick_scanned_qty,
+    pld.putback_pending_qty,
+    pld.putback_accepted_qty,
+    pld.batch_id,
+    b.code AS batch_code,
+    pld.shelf_id,
+    s.code AS shelf_code
+FROM uniware.picklist_item_detail pld
+JOIN uniware.item_type it ON it.id = pld.item_type_id
+LEFT JOIN uniware.batch b ON b.id = pld.batch_id
+LEFT JOIN uniware.shelf s ON s.id = pld.shelf_id
+WHERE pld.picklist_id = (SELECT id FROM uniware.picklist WHERE code = @picklist_code AND facility_id = @facility_id);
+
+-- ----------------------------------------------------------------------------
+-- 4. Pick Batches
+-- ----------------------------------------------------------------------------
+SELECT 
+    pb.id AS pick_batch_id,
+    pb.picklist_id,
+    pb.status_code,
+    pb.pick_bucket_id,
+    pb.created,
+    pb.submitted_date,
+    pb.updated
+FROM uniware.pick_batch pb
+WHERE pb.picklist_id = (SELECT id FROM uniware.picklist WHERE code = @picklist_code AND facility_id = @facility_id);
+
+-- ----------------------------------------------------------------------------
+-- 5. Pick Buckets (Totes) – full details
+-- ----------------------------------------------------------------------------
+SELECT 
+    pbu.id AS pick_bucket_id,
+    pbu.code AS tote_code,
+    pbu.status_code,
+    pbu.facility_id,
+    pbu.length,
+    pbu.width,
+    pbu.height,
+    pbu.created,
+    pbu.updated
+FROM uniware.pick_bucket pbu
+WHERE pbu.id IN (
+    SELECT DISTINCT pick_bucket_id 
+    FROM uniware.pick_batch 
+    WHERE picklist_id = (SELECT id FROM uniware.picklist WHERE code = @picklist_code AND facility_id = @facility_id)
+);
+
+-- ----------------------------------------------------------------------------
+-- 6. Tote Assignments (buckets -> slots -> shipping packages)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pbs.id AS bucket_slot_id,
+    pbs.picklist_id,
+    pbs.slot_number,
+    pbs.shipping_package_id,
+    sp.code AS shipping_package_code,
+    pbsi.id AS slot_item_id,
+    pbsi.sale_order_item_id,
+    pbsi.status_code AS slot_item_status,
+    pbsi.created AS slot_assigned_time
+FROM uniware.pick_bucket_slot pbs
+LEFT JOIN uniware.shipping_package sp ON sp.id = pbs.shipping_package_id
+LEFT JOIN uniware.pick_bucket_slot_item pbsi ON pbsi.pick_bucket_slot_id = pbs.id
+WHERE pbs.picklist_id = (SELECT id FROM uniware.picklist WHERE code = @picklist_code AND facility_id = @facility_id);
+
+-- ----------------------------------------------------------------------------
+-- 7. Summary (totals, percentages, completion)
+-- ----------------------------------------------------------------------------
+SELECT 
+    pl.id AS picklist_id,
+    pl.code,
+    COUNT(DISTINCT pli.id) AS total_picklist_items,
+    SUM(CASE WHEN pli.scanned = 1 THEN 1 ELSE 0 END) AS scanned_items,
+    ROUND(100.0 * SUM(CASE WHEN pli.scanned = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(pli.id), 0), 2) AS scan_percentage,
+    SUM(pld.total_qty) AS total_quantity_to_pick,
+    SUM(pld.scanned_qty) AS total_scanned_quantity,
+    SUM(pld.picked_qty) AS total_picked_quantity,
+    SUM(pld.not_found_qty) AS total_not_found,
+    SUM(pld.cancelled_qty) AS total_cancelled,
+    pl.status_code AS picklist_status,
+    pl.created AS picklist_created,
+    pl.complete_picking AS picklist_completed
+FROM uniware.picklist pl
+LEFT JOIN uniware.picklist_item pli ON pli.picklist_id = pl.id
+LEFT JOIN uniware.picklist_item_detail pld ON pld.picklist_id = pl.id
+WHERE pl.code = @picklist_code AND pl.facility_id = @facility_id
+GROUP BY pl.id;
+
+
+
+
+
+
 
