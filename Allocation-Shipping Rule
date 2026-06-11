@@ -1,0 +1,49 @@
+-- ================================================================
+-- GLOBAL: Shipping Allocation Rules + Facility Allocation Rules
+-- ================================================================
+
+SELECT
+    'SHIPPING_ALLOCATION'           AS rule_type,
+    spar.id                         AS rule_id,
+    spar.name                       AS rule_name,
+    spar.condition_expression       AS expression,
+    spar.allocation_criteria,
+    spar.type                       AS rule_sub_type,
+    spar.preference                 AS priority,
+    spar.enabled,
+    sp.name                         AS shipping_provider_name,
+    sp.code                         AS shipping_provider_code,
+    f.display_name                  AS facility_name,
+    fa.code                         AS facility_code,
+    NULL                            AS tenant_id,
+    spar.created,
+    spar.updated
+FROM uniware.shipping_provider_allocation_rule spar
+LEFT JOIN uniware.shipping_provider sp  ON sp.id = spar.shipping_provider_id
+LEFT JOIN uniware.facility f            ON f.id = spar.facility_id
+LEFT JOIN uniware.facility_alias fa     ON fa.facility_id = f.id
+
+UNION ALL
+
+SELECT
+    'FACILITY_ALLOCATION'           AS rule_type,
+    far.id                          AS rule_id,
+    far.name                        AS rule_name,
+    far.condition_expression        AS expression,
+    NULL                            AS allocation_criteria,
+    NULL                            AS rule_sub_type,
+    far.preference                  AS priority,
+    far.enabled,
+    NULL                            AS shipping_provider_name,
+    NULL                            AS shipping_provider_code,
+    f.display_name                  AS facility_name,
+    fa.code                         AS facility_code,
+    far.tenant_id,
+    far.created,
+    far.updated
+FROM uniware.facility_allocation_rule far
+LEFT JOIN uniware.facility f            ON f.id = far.facility_id
+LEFT JOIN uniware.facility_alias fa     ON fa.facility_id = f.id
+
+ORDER BY rule_type, priority ASC
+LIMIT 1000
