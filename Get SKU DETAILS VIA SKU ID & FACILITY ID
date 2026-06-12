@@ -1,0 +1,82 @@
+-- ============================================================
+-- All inventory updates for SKU ID 3352502 at facility 16958
+-- ============================================================
+
+SET @sku_id = 3352502;
+SET @facility_id = 16958;
+
+-- Get SKU code
+SET @sku_code = (SELECT sku_code FROM uniware.item_type WHERE id = @sku_id);
+
+SELECT * FROM (
+    -- 1. Inventory ledger
+    SELECT
+        'INVENTORY_LEDGER' AS source_table,
+        il.created AS event_time,
+        il.transaction_type,
+        il.transaction_identifier,
+        il.quantity,
+        il.old_balance,
+        il.new_balance,
+        il.status_code,
+        il.additional_info AS remarks
+    FROM uniware.inventory_ledger il
+    WHERE il.sku_code = @sku_code
+      AND il.facility_id = @facility_id
+
+    UNION ALL
+
+    -- 2. Manual adjustments
+    SELECT
+        'INVENTORY_ADJUSTMENT',
+        ia.created,
+        ia.adjustment_type,
+        ia.remarks,
+        ia.quantity,
+        ia.old_quantity,
+        NULL,
+        NULL,
+        CONCAT('by=', ia.username, ' from=', ia.from_shelf_code, ' to=', ia.to_shelf_code)
+    FROM uniware.inventory_adjustment ia
+    WHERE ia.sku_code = @sku_code
+      AND ia.facility_id = @facility_id
+
+    UNION ALL
+
+    -- 3. Goods receipt (GRN)
+    SELECT
+        'INFLOW_RECEIPT',
+        ir.created,
+        'GRN_RECEIPT',
+        ir.code,
+        iri.quantity,
+        NULL,
+        NULL,
+        NULL,
+        CONCAT('PO=', ir.purchase_order_id, ' invoice=', ir.vendor_invoice_number)
+    FROM uniware.inflow_receipt ir
+    JOIN uniware.inflow_receipt_item iri ON iri.inflow_receipt_id = ir.id
+    JOIN uniware.item_type it ON it.id = iri.item_type_id
+    WHERE it.sku_code = @sku_code
+      AND ir.facility_id = @facility_id
+
+    UNION ALL
+
+    -- 4. Sale orders (deductions)
+    SELECT
+        'SALE_ORDER_ITEM',
+        soi.created,
+        'SALE_ORDER',
+        so.code,
+        -soi.quantity,
+        NULL,
+        NULL,
+        soi.status_code,
+        CONCAT('Order status=', so.status_code, ' customer=', so.customer_id)
+    FROM uniware.sale_order_item soi
+    JOIN uniware.sale_order so ON so.id = soi.sale_order_id
+    WHERE soi.sku_code = @sku_code
+      AND soi.facility_id = @facility_id
+
+) AS all_movements
+ORDER BY event_time DESC;
